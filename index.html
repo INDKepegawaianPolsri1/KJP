@@ -98,7 +98,7 @@ tbody tr.weekend td{color:#9aa8b6}
 <div class="stats">
 <div class="stat"><small>JUMLAH PEGAWAI</small><strong id="sEmployees">0</strong></div>
 <div class="stat"><small>JUMLAH TANGGAL</small><strong id="sDates">0</strong></div>
-<div class="stat"><small>TOTAL JAM LEMBUR</small><strong id="sHours">0:00</strong></div>
+<div class="stat"><small>TOTAL JAM LEMBUR</small><strong id="sHours">00:00</strong></div>
 <div class="stat"><small>PERIODE</small><strong id="sPeriod" style="font-size:15px">-</strong></div>
 </div>
 <section class="panel">
@@ -123,7 +123,7 @@ if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudf
 const $=id=>document.getElementById(id);
 let employees=[],records=[],currentKind='KJP1',dateList=[],sourceName='';
 const weekdays=['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'];
-const fmtMin=n=>{n=Math.max(0,Math.round(n||0));return Math.floor(n/60)+':'+String(n%60).padStart(2,'0')};
+const fmtMin=n=>{n=Math.max(0,Math.round(n||0));return String(Math.floor(n/60)).padStart(2,'0')+':'+String(n%60).padStart(2,'0')};
 const parseTime=s=>{if(!s)return null;let m=String(s).match(/(\d{1,2})[:.](\d{2})(?::\d{2})?/);if(!m)return null;let h=+m[1],mi=+m[2];return h<24&&mi<60?h*60+mi:null};
 const dateKey=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 function parseDate(s){if(s instanceof Date&&!isNaN(s))return new Date(s.getFullYear(),s.getMonth(),s.getDate());let x=String(s||'').trim();let m=x.match(/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/);if(m)return new Date(+m[3],+m[2]-1,+m[1]);m=x.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);if(m)return new Date(+m[1],+m[2]-1,+m[3]);return null}
@@ -139,15 +139,32 @@ let m=line.match(/^(\d{1,5})\s+(.+?)\s+(\d{1,2}[\/.-]\d{1,2}[\/.-]\d{4})\s+(\d{1
 if(m){addRecord(m[2],m[1],'',m[3],m[4],m[5]);count++;continue}
 let m2=line.match(/^(.+?)\s+(\d{1,2}[\/.-]\d{1,2}[\/.-]\d{4})\s+(\d{1,2}[:.]\d{2}(?::\d{2})?)?\s+(\d{1,2}[:.]\d{2}(?::\d{2})?)?$/);if(m2){addRecord(m2[1],'','',m2[2],m2[3],m2[4]);count++}}
 return count}
-function parseKJP1Text(text){let lines=text.split(/\r?\n/).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean),name='',nip='',job='',count=0,lastDate=null,times=[];function flush(){if(name&&lastDate&&times.length){let ts=times.map(parseTime).filter(v=>v!=null).sort((a,b)=>a-b);addRecord(name,nip,job,lastDate,ts.length?minsToTime(ts[0]):'',ts.length>1?minsToTime(ts[ts.length-1]):'');count++}lastDate=null;times=[]}
-for(let i=0;i<lines.length;i++){let l=lines[i];let nm=l.match(/^(?:Nama(?:\s*Pegawai)?|Pegawai)\s*[:\-]\s*(.+)$/i);if(nm){flush();name=nm[1].trim();nip='';job='';continue}
-let ni=l.match(/NIP\s*[:\-]?\s*([0-9.\-]+)/i);if(ni){nip=ni[1];if(!name&&i>0){let prev=lines[i-1].match(/^([A-Z][A-Za-z .,'-]{3,})$/);if(prev)name=prev[1]}continue}
-let jb=l.match(/Jabatan\s*[:\-]\s*(.+)$/i);if(jb){job=jb[1].trim();continue}
-let dt=l.match(/(\d{1,2}[\/.-]\d{1,2}[\/.-]\d{4})/);if(dt){flush();lastDate=dt[1];let rest=l.slice(dt.index+dt[0].length);let tm=[...rest.matchAll(/\b(\d{1,2}[:.]\d{2}(?::\d{2})?)\b/g)].map(x=>x[1]);times.push(...tm);continue}
-if(lastDate){let found=[...l.matchAll(/\b(\d{1,2}[:.]\d{2}(?::\d{2})?)\b/g)].map(x=>x[1]);if(found.length)times.push(...found)}
-if(!name&&!nip&&/^[A-Z][A-Za-z .,'-]{3,}$/.test(l)&&!/(LOG|TRANSAKSI|TANGGAL|JAM|ABSEN)/i.test(l)){name=l}
+function parseKJP1Text(text){
+/* Format log transaksi: tiap baris = satu tap "dd-mm-yyyy hh:mm:ss". Pegawai sering tap berulang (2-3x), jadi semua tap digabung per pegawai per tanggal:
+   tap PALING AWAL = jam masuk, tap PALING AKHIR = jam pulang. */
+let lines=text.split(/\r?\n/).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean),cur=null,days=new Map(),order=[];
+const emp=()=>employees.find(x=>x.name===cur);
+for(let l of lines){
+ let nm=l.match(/^Nama(?:\s*Pegawai)?\s*[:\-]\s*(.+)$/i);
+ if(nm){let parts=nm[1].split(/\s+Jabatan\s*[:\-]\s*/i);cur=parts[0].replace(/\s+NIP\s*[:\-].*$/i,"").trim();addEmployee(cur,"",(parts[1]||"").trim());if(!days.has(cur)){days.set(cur,new Map());order.push(cur)}continue}
+ let jb=l.match(/^Jabatan\s*[:\-]\s*(.+)$/i);
+ if(jb){let e=emp();if(e&&!e.job)e.job=jb[1].replace(/\s+Organisasi\s*[:\-].*$/i,"").trim();continue}
+ let ni=l.match(/^NIP\s*[:\-]\s*(\d[\d.\-]*)/i);
+ if(ni){let e=emp();if(e&&!e.nip)e.nip=ni[1];continue}
+ let tp=l.match(/^(\d{1,2}[\/.-]\d{1,2}[\/.-]\d{4})\s+(\d{1,2}[:.]\d{2}(?::\d{2})?)$/);
+ if(tp&&cur){let t=parseTime(tp[2]);if(t==null)continue;let dm=days.get(cur);if(!dm.has(tp[1]))dm.set(tp[1],[]);dm.get(tp[1]).push(t)}
 }
-flush();return count}
+let count=0;
+for(let name of order){
+ let e=employees.find(x=>x.name===name);
+ for(let [date,taps] of days.get(name)){
+  taps.sort((a,b)=>a-b);let first=taps[0],last=taps[taps.length-1],inn=null,out=null;
+  if(last-first<120){ /* hanya satu kejadian (tap berulang): sebelum 12.00 = masuk saja, sesudahnya = pulang saja (data tidak lengkap) */
+   if(first<720)inn=first;else out=last}
+  else{inn=first;out=last}
+  addRecord(name,e?e.nip:"",e?e.job:"",date,inn==null?"":minsToTime(inn),out==null?"":minsToTime(out));count++}
+}
+return count}
 async function readPDF(file){let buf=await file.arrayBuffer(),pdf=await pdfjsLib.getDocument({data:buf}).promise,all='';for(let p=1;p<=pdf.numPages;p++){let page=await pdf.getPage(p),tc=await page.getTextContent(),items=tc.items;let rows={};for(let it of items){if(!it.str.trim())continue;let y=Math.round(it.transform[5]);(rows[y]??=[]).push({x:it.transform[4],s:it.str})}let lines=Object.keys(rows).map(Number).sort((a,b)=>b-a).map(y=>rows[y].sort((a,b)=>a.x-b.x).map(x=>x.s).join(' '));all+=lines.join('\n')+'\n'}return all}
 async function readSpreadsheet(file){let data=await file.arrayBuffer(),wb=XLSX.read(data,{type:'array',cellDates:true}),ws=wb.Sheets[wb.SheetNames[0]],rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});let header=-1,idx={};for(let i=0;i<Math.min(rows.length,20);i++){let h=rows[i].map(v=>String(v).toLowerCase().trim());let find=(a)=>h.findIndex(x=>a.some(t=>x.includes(t)));let n=find(['nama','pegawai']),d=find(['tanggal','date']),mi=find(['masuk','jam masuk','check in']),mo=find(['keluar','pulang','jam keluar','check out']);if(n>=0&&d>=0&&mi>=0&&mo>=0){header=i;idx={n,d,mi,mo,nip:find(['nip','no akun','akun']),job:find(['jabatan'])};break}}
 if(header<0)throw Error('Kolom spreadsheet tidak dikenali. Diperlukan Nama, Tanggal, Masuk, dan Keluar.');let c=0;for(let r of rows.slice(header+1)){let dt=r[idx.d];if(dt instanceof Date){dt=new Date(dt.getFullYear(),dt.getMonth(),dt.getDate())}let name=r[idx.n];if(name&&dt){addRecord(name,idx.nip>=0?r[idx.nip]:'',idx.job>=0?r[idx.job]:'',dt,r[idx.mi],r[idx.mo]);c++}}return c}
@@ -159,10 +176,10 @@ let tbody=$('dailyTable').querySelector('tbody');tbody.innerHTML='';let no=0;for
 let sums=aggregates(),mt=$('monthlyTable').querySelector('tbody');mt.innerHTML='';for(let [i,a] of sums.entries()){let tr=document.createElement('tr');let vals=[i+1,a.employee.name,...a.weeks.slice(0,6).map(fmtMin),a.days,fmtMin(a.total),'PRAKTIKUM'];for(let v of vals){let td=document.createElement('td');td.textContent=v;tr.appendChild(td)}mt.appendChild(tr)}
 let total=monthRecords.reduce((s,r)=>s+r.minutes,0);$('sEmployees').textContent=employees.length;$('sDates').textContent=dateList.length;$('sHours').textContent=fmtMin(total);$('sPeriod').textContent=new Date(yy,mm-1,1).toLocaleDateString('id-ID',{month:'short',year:'numeric'});$('reportPeriod').textContent='UNTUK BULAN '+new Date(yy,mm-1,1).toLocaleDateString('id-ID',{month:'long',year:'numeric'}).toUpperCase();$('excel').disabled=employees.length===0;$('pdf').disabled=employees.length===0}
 $('process').addEventListener('click',async()=>{let f=$('file').files[0];if(!f){setStatus('Silakan pilih file absensi terlebih dahulu.','error');return}employees=[];records=[];dateList=[];sourceName=f.name;setStatus('Sedang membaca file. Mohon tunggu...');try{let ext=f.name.split('.').pop().toLowerCase(),n=0;if(ext==='pdf'){if(!window.pdfjsLib)throw Error('Pustaka pembaca PDF belum termuat. Periksa koneksi internet lalu muat ulang halaman.');let text=await readPDF(f);n=currentKind==='KJP2'?parseKJP2Text(text):parseKJP1Text(text)}else if(['xlsx','xls','csv'].includes(ext)){if(!window.XLSX)throw Error('Pustaka Excel belum termuat. Periksa koneksi internet.');n=await readSpreadsheet(f)}else throw Error('Format file tidak didukung.');
-if(!employees.length||!records.length)throw Error('Data pegawai belum berhasil dikenali. Pastikan PDF berisi teks yang dapat dipilih, atau gunakan file Excel/CSV dengan kolom Nama, Tanggal, Masuk, dan Keluar.');render();setStatus(`Berhasil membaca ${f.name}. Ditemukan ${employees.length} pegawai dan ${records.length} catatan tanggal. Periksa hasilnya sebelum mengunduh.`, 'ok')
+if(!employees.length||!records.length)throw Error('Data pegawai belum berhasil dikenali. Pastikan PDF berisi teks yang dapat dipilih, atau gunakan file Excel/CSV dengan kolom Nama, Tanggal, Masuk, dan Keluar.');render();let inc=records.filter(r=>r.in==null||r.out==null).length;setStatus(`Berhasil membaca ${f.name}. Ditemukan ${employees.length} pegawai dan ${records.length} catatan tanggal.`+(inc?` Ada ${inc} hari dengan data tidak lengkap (hanya masuk atau hanya pulang), dihitung 0:00. Periksa kolom Absen Masuk/Pulang yang bertanda "-".`:'')+' Periksa hasilnya sebelum mengunduh.', inc?'':'ok')
 }catch(e){setStatus('Gagal memproses file: '+e.message,'error');console.error(e)}});
-$('clear').addEventListener('click',()=>{employees=[];records=[];dateList=[];$('file').value='';$('dailyTable').querySelector('tbody').innerHTML='<tr><td colspan="9" class="empty">Belum ada data.</td></tr>';$('monthlyTable').querySelector('tbody').innerHTML='<tr><td colspan="11" class="empty">Belum ada data.</td></tr>';$('excel').disabled=true;$('pdf').disabled=true;$('sEmployees').textContent='0';$('sDates').textContent='0';$('sHours').textContent='0:00';$('sPeriod').textContent='-';setStatus('Data telah direset.')});
-$('excel').addEventListener('click',()=>{buildData();let wb=XLSX.utils.book_new(),[y,m]=$('month').value.split('-').map(Number),rows=[['No','Nama','NIP / No. Akun','Jabatan','Tanggal','Hari','Absen Masuk','Absen Pulang','Jam Lembur (menit)']];let no=0;for(let e of employees)for(let d of dateList){let r=records.find(x=>x.name===e.name&&x.dateKey===dateKey(d));rows.push([++no,e.name,e.nip,e.job,d.toLocaleDateString('id-ID'),weekdays[d.getDay()],r?.in!=null?minsToTime(r.in):'',r?.out!=null?minsToTime(r.out):'',r?.minutes||0])}let ws=XLSX.utils.aoa_to_sheet(rows);XLSX.utils.book_append_sheet(wb,ws,'Rekap Harian');let sums=aggregates(),mr=[['No','Nama','Minggu 1','Minggu 2','Minggu 3','Minggu 4','Minggu 5','Minggu 6','Jumlah Hari','Total','Keterangan']];sums.forEach((a,i)=>mr.push([i+1,a.employee.name,...a.weeks.slice(0,6).map(fmtMin),a.days,fmtMin(a.total),'PRAKTIKUM']));XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(mr),'Rekap Bulanan');let er=[['Nama','NIP / No. Akun','Jabatan'],...employees.map(e=>[e.name,e.nip,e.job])];XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(er),'Data Pegawai');XLSX.writeFile(wb,`REKAP_LEMBUR_${currentKind}_${y}-${String(m).padStart(2,'0')}.xlsx`)});
+$('clear').addEventListener('click',()=>{employees=[];records=[];dateList=[];$('file').value='';$('dailyTable').querySelector('tbody').innerHTML='<tr><td colspan="9" class="empty">Belum ada data.</td></tr>';$('monthlyTable').querySelector('tbody').innerHTML='<tr><td colspan="11" class="empty">Belum ada data.</td></tr>';$('excel').disabled=true;$('pdf').disabled=true;$('sEmployees').textContent='0';$('sDates').textContent='0';$('sHours').textContent='00:00';$('sPeriod').textContent='-';setStatus('Data telah direset.')});
+$('excel').addEventListener('click',()=>{buildData();let wb=XLSX.utils.book_new(),[y,m]=$('month').value.split('-').map(Number),rows=[['No','Nama','NIP / No. Akun','Jabatan','Tanggal','Hari','Absen Masuk','Absen Pulang','Jam Lembur']];let no=0;for(let e of employees)for(let d of dateList){let r=records.find(x=>x.name===e.name&&x.dateKey===dateKey(d));rows.push([++no,e.name,e.nip,e.job,d.toLocaleDateString('id-ID'),weekdays[d.getDay()],r?.in!=null?minsToTime(r.in):'',r?.out!=null?minsToTime(r.out):'',fmtMin(r?.minutes||0)])}let ws=XLSX.utils.aoa_to_sheet(rows);XLSX.utils.book_append_sheet(wb,ws,'Rekap Harian');let sums=aggregates(),mr=[['No','Nama','Minggu 1','Minggu 2','Minggu 3','Minggu 4','Minggu 5','Minggu 6','Jumlah Hari','Total','Keterangan']];sums.forEach((a,i)=>mr.push([i+1,a.employee.name,...a.weeks.slice(0,6).map(fmtMin),a.days,fmtMin(a.total),'PRAKTIKUM']));XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(mr),'Rekap Bulanan');let er=[['Nama','NIP / No. Akun','Jabatan'],...employees.map(e=>[e.name,e.nip,e.job])];XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(er),'Data Pegawai');XLSX.writeFile(wb,`REKAP_LEMBUR_${currentKind}_${y}-${String(m).padStart(2,'0')}.xlsx`)});
 $('pdf').addEventListener('click',()=>{buildData();const {jsPDF}=window.jspdf;let doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});let [y,m]=$('month').value.split('-').map(Number);doc.setFontSize(13);doc.text(`REKAPITULASI TOTAL JAM LEMBUR ${currentKind}`,148,13,{align:'center'});doc.setFontSize(10);doc.text('POLITEKNIK NEGERI SRIWIJAYA',148,19,{align:'center'});doc.text('BULAN '+new Date(y,m-1,1).toLocaleDateString('id-ID',{month:'long',year:'numeric'}).toUpperCase(),148,25,{align:'center'});let sums=aggregates();doc.autoTable({startY:30,head:[['No','Nama','Minggu 1','Minggu 2','Minggu 3','Minggu 4','Minggu 5','Minggu 6','Jumlah Hari','Total','Keterangan']],body:sums.map((a,i)=>[i+1,a.employee.name,...a.weeks.slice(0,6).map(fmtMin),a.days,fmtMin(a.total),'PRAKTIKUM']),styles:{fontSize:8,cellPadding:2},headStyles:{fillColor:[23,83,126]}});doc.addPage('a4','landscape');doc.setFontSize(12);doc.text('RINCIAN REKAP LEMBUR HARIAN',148,13,{align:'center'});let daily=[];let no=0;for(let e of employees)for(let d of dateList){let r=records.find(x=>x.name===e.name&&x.dateKey===dateKey(d));daily.push([++no,e.name,e.nip||'',d.toLocaleDateString('id-ID'),weekdays[d.getDay()],r?.in!=null?minsToTime(r.in):'-',r?.out!=null?minsToTime(r.out):'-',fmtMin(r?.minutes||0)])}doc.autoTable({startY:19,head:[['No','Nama','NIP','Tanggal','Hari','Masuk','Pulang','Lembur']],body:daily,styles:{fontSize:6.5,cellPadding:1.5},headStyles:{fillColor:[23,83,126]},margin:{left:8,right:8}});doc.save(`REKAP_LEMBUR_${currentKind}_${y}-${String(m).padStart(2,'0')}.pdf`)});
 $('month').addEventListener('change',()=>{if(employees.length)render()});
 setInterval(()=>$('clock').textContent=new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}),1000);
@@ -174,10 +191,10 @@ function countUp(el,to,fmt){const dur=900,t0=performance.now();el.classList.remo
 function enhance(){
  const n=(id)=>+($(id).textContent)||0;
  const e=n('sEmployees'),d=n('sDates'),h=$('sHours').textContent.split(':'),mins=(+h[0]||0)*60+(+h[1]||0);
- countUp($('sEmployees'),e,v=>v);countUp($('sDates'),d,v=>v);countUp($('sHours'),mins,v=>Math.floor(v/60)+':'+String(v%60).padStart(2,'0'));
+ countUp($('sEmployees'),e,v=>v);countUp($('sDates'),d,v=>v);countUp($('sHours'),mins,v=>String(Math.floor(v/60)).padStart(2,'0')+':'+String(v%60).padStart(2,'0'));
  $('sPeriod').classList.remove('bump');void $('sPeriod').offsetWidth;$('sPeriod').classList.add('bump');
  document.querySelectorAll('#dailyTable tbody tr,#monthlyTable tbody tr').forEach((tr,i)=>{
-  const c=tr.children;if(c.length===9){if(c[8].textContent!=='0:00')tr.classList.add('has-ot');if(/Sabtu|Minggu/.test(c[5].textContent))tr.classList.add('weekend')}
+  const c=tr.children;if(c.length===9){if(c[8].textContent!=='00:00')tr.classList.add('has-ot');if(/Sabtu|Minggu/.test(c[5].textContent))tr.classList.add('weekend')}
   tr.classList.add('row-in');tr.style.animationDelay=Math.min(i,40)*18+'ms'});
 }
 const _render=render;render=function(){_render.apply(this,arguments);enhance()};
